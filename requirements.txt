@@ -1,0 +1,14 @@
+python-dotenv
+requests
+beautifulsoup4
+langchain-community
+langchain-text-splitters
+langchain-chroma
+langchain-ollama
+openai
+langchain_openai
+faiss-cpu
+sentence_transformers
+langchain_huggingface
+validators
+langchain_core
