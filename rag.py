@@ -2,17 +2,12 @@ import os
 import logging
 import requests
 import warnings
-from typing import Any, List, Optional, Union, Dict
+from typing import Any, List, Optional, Dict
 from dotenv import load_dotenv
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_huggingface import HuggingFaceEmbeddings  
-from langchain_community.vectorstores import FAISS 
-from langchain.chains import RetrievalQA
-from langchain_core.language_models.base import BaseLanguageModel
-from langchain_core.outputs import Generation
-from langchain_core.messages import BaseMessage
-from pydantic import BaseModel, Field, ConfigDict
+from sentence_transformers import SentenceTransformer
+import faiss
 import validators
+from bs4 import BeautifulSoup
 
 def setup_environment():
     """Setup environment variables and configuration."""
@@ -20,7 +15,8 @@ def setup_environment():
     required_env_vars = ['CLAUDE_API_KEY', 'USER_AGENT']
     missing_vars = [var for var in required_env_vars if not os.getenv(var)]
     if missing_vars:
-        raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}. ""Please add them to your .env file or set them in your environment.")
+        raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}. "
+                               "Please add them to your .env file or set them in your environment.")
 
 def setup_logging():
     """Configure logging."""
@@ -29,33 +25,28 @@ def setup_logging():
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
-class ClaudeConfig(BaseModel):
-    model: str = "claude-3-sonnet-20240229"
-    max_tokens: int = 150
-    temperature: float = 0.5
-    api_version: str = "2023-06-01"
+class ClaudeAPI:
+    """Class to interact with Claude API."""
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.model = "claude-3-sonnet-20240229"
+        self.max_tokens = 150
+        self.temperature = 0.5
+        self.api_version = "2023-06-01"
 
-class ClaudeLLM(BaseLanguageModel):
-    """Custom LLM class for Claude API."""
-    
-    api_key: str = Field(..., description="API key for Claude")
-    config: ClaudeConfig = Field(default_factory=ClaudeConfig)
-    
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-    
-    def _query_claude(self, prompt: str) -> str:
-        """Queries the Claude API with the given prompt."""
+    def query(self, prompt: str) -> str:
+        """Queries the Claude API."""
         url = "https://api.anthropic.com/v1/messages"
         headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": self.config.api_version,
-            "content-type": "application/json"
+            "Authorization": f"Bearer {self.api_key}",
+            "Anthropic-Version": self.api_version,
+            "Content-Type": "application/json"
         }
         
         data = {
-            "model": self.config.model,
-            "max_tokens": self.config.max_tokens,
-            "temperature": self.config.temperature,
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
             "messages": [{"role": "user", "content": prompt}]
         }
         
@@ -63,26 +54,10 @@ class ClaudeLLM(BaseLanguageModel):
         try:
             response = requests.post(url, json=data, headers=headers)
             response.raise_for_status()
-            return response.json()["content"]  # Fixed response parsing
+            return response.json().get("content", "No response from Claude API.")
         except requests.exceptions.RequestException as e:
             logging.error(f"Error making request to Claude API: {e}")
             return f"Error getting response from Claude API: {str(e)}"
-
-    def predict(self, text: str, **kwargs) -> str:
-        return self._query_claude(text)
-
-    def invoke(self, input: Union[str, List[BaseMessage]], config: Optional[Dict] = None) -> Any:
-        """Handles single string or list of messages as input."""
-        if isinstance(input, str):
-            return self.predict(input)
-        elif isinstance(input, list):
-            return self.predict(" ".join([m.content for m in input]))
-        else:
-            raise ValueError(f"Unsupported input type: {type(input)}")
-
-    @property
-    def _llm_type(self) -> str:
-        return "claude"
 
 def scrape_website(url):
     """Scrapes the content of a given website."""
@@ -91,19 +66,23 @@ def scrape_website(url):
         return None
         
     logging.info(f"Scraping website: {url}")
+    headers = {"User-Agent": os.getenv("USER_AGENT", "Mozilla/5.0")}
     
     try:
-        loader = WebBaseLoader(web_path=url)
-        documents = loader.load()
-        
-        if documents:
-            content = " ".join([doc.page_content for doc in documents])
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        paragraphs = soup.find_all("p")
+        content = "\n".join([p.get_text() for p in paragraphs])
+
+        if content:
             return content
         else:
-            logging.warning("No documents found.")
+            logging.warning("No textual content found.")
             return None
-    except Exception as e:
-        logging.error(f"Unexpected error while scraping: {e}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Request error while scraping: {e}")
         return None
 
 def chunk_text(text, chunk_size=500, overlap=50):
@@ -112,42 +91,47 @@ def chunk_text(text, chunk_size=500, overlap=50):
         return []
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size - overlap)]
 
-def text_to_vectors(chunks):
-    """Converts the text chunks into embeddings using HuggingFace model."""
+def text_to_vectors(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+    """Converts the text chunks into embeddings using HuggingFace SentenceTransformer."""
     if not chunks:
         return [], None
-        
+
     logging.info("Generating embeddings for text chunks...")
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vectors = embeddings.embed_documents(chunks)
-    return vectors, embeddings
+    model = SentenceTransformer(model_name)
+    vectors = model.encode(chunks, convert_to_numpy=True)
+    return vectors, model
 
-def store_vectors(chunks, embeddings):
+def store_vectors(vectors):
     """Stores the vectors in FAISS index."""
-    if not chunks or not embeddings:
+    if len(vectors) == 0:
         return None
-        
-    logging.info("Storing vectors in FAISS index...")
-    vector_store = FAISS.from_texts(chunks, embeddings)
-    return vector_store
 
-def create_retrieval_qa_chain(vector_store):
-    """Creates the RetrievalQA chain using the vector store and Claude API."""
-    logging.info("Creating RetrievalQA chain...")
+    logging.info("Storing vectors in FAISS index...")
+    dimension = vectors.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(vectors)
+    return index
+
+def retrieve_answer(index, query, chunks, model):
+    """Retrieves the most relevant chunk using FAISS and queries Claude API."""
+    query_vector = model.encode([query], convert_to_numpy=True)
+    distances, indices = index.search(query_vector, 1)  # Get top-1 match
     
+    if len(indices) == 0 or indices[0][0] == -1:
+        logging.error("No relevant match found in FAISS index.")
+        return "No relevant match found."
+
+    best_match = chunks[indices[0][0]]
+
+    logging.info(f"Best matching chunk: {best_match[:200]}...")
+
     api_key = os.getenv("CLAUDE_API_KEY")
     if not api_key:
         raise ValueError("CLAUDE_API_KEY environment variable is not set")
-        
-    claude_llm = ClaudeLLM(api_key=api_key)
-    
-    retrieval_qa = RetrievalQA.from_chain_type(
-        llm=claude_llm,
-        chain_type="stuff",
-        retriever=vector_store.as_retriever(),
-        return_source_documents=True
-    )
-    return retrieval_qa
+
+    claude = ClaudeAPI(api_key)
+    response = claude.query(best_match + "\n" + query)
+    return response
 
 def main():
     """Main function to run the script."""
@@ -167,10 +151,10 @@ def main():
         chunks = chunk_text(scraped_text)
         logging.info(f"Number of chunks created: {len(chunks)}")
         
-        vectors, embeddings = text_to_vectors(chunks)
+        vectors, model = text_to_vectors(chunks)
         logging.info(f"Number of vectors created: {len(vectors)}")
         
-        vector_store = store_vectors(chunks, embeddings)
+        vector_store = store_vectors(vectors)
         if not vector_store:
             logging.error("Failed to create vector store.")
             return
@@ -180,11 +164,10 @@ def main():
             if query.lower() == 'quit':
                 break
                 
-            retrieval_qa = create_retrieval_qa_chain(vector_store)
-            response = retrieval_qa.invoke(query)
+            response = retrieve_answer(vector_store, query, chunks, model)
             
             print("\nResponse:")
-            print(response["result"])
+            print(response)
 
     except EnvironmentError as e:
         print(f"Environment Error: {str(e)}")
