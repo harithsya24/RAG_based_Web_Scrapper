@@ -1,82 +1,42 @@
 import os
 import logging
 import requests
-import warnings
-from typing import Any, List, Optional, Dict
-from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
-import faiss
 import validators
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import FAISS
+from langchain_openai import ChatOpenAI
+from langchain_openai import OpenAIEmbeddings
 
-def setup_environment():
-    """Setup environment variables and configuration."""
-    load_dotenv()
-    required_env_vars = ['CLAUDE_API_KEY', 'USER_AGENT']
-    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
-    if missing_vars:
-        raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}. "
-                               "Please add them to your .env file or set them in your environment.")
 
-def setup_logging():
-    """Configure logging."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+# Load environment variables
+load_dotenv()
 
-class ClaudeAPI:
-    """Class to interact with Claude API."""
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.model = "claude-3-sonnet-20240229"
-        self.max_tokens = 150
-        self.temperature = 0.5
-        self.api_version = "2023-06-01"
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    def query(self, prompt: str) -> str:
-        """Queries the Claude API."""
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Anthropic-Version": self.api_version,
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        
-        logging.info("Making request to Claude API...")
-        try:
-            response = requests.post(url, json=data, headers=headers)
-            response.raise_for_status()
-            return response.json().get("content", "No response from Claude API.")
-        except requests.exceptions.RequestException as e:
-            logging.error(f"Error making request to Claude API: {e}")
-            return f"Error getting response from Claude API: {str(e)}"
-
+# Function to scrape website content
 def scrape_website(url):
-    """Scrapes the content of a given website."""
+    """Scrapes textual content from a given website."""
     if not validators.url(url):
         logging.error("Invalid URL provided.")
         return None
-        
+
     logging.info(f"Scraping website: {url}")
-    headers = {"User-Agent": os.getenv("USER_AGENT", "Mozilla/5.0")}
-    
+    headers = {"User-Agent": "Mozilla/5.0"}
+
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.text, "html.parser")
         paragraphs = soup.find_all("p")
-        content = "\n".join([p.get_text() for p in paragraphs])
+        content = "\n".join([p.get_text() for p in paragraphs if p.get_text().strip()])
 
         if content:
+            logging.info(f"Scraped {len(content)} characters from the website.")
             return content
         else:
             logging.warning("No textual content found.")
@@ -85,94 +45,63 @@ def scrape_website(url):
         logging.error(f"Request error while scraping: {e}")
         return None
 
-def chunk_text(text, chunk_size=500, overlap=50):
-    """Chunks the input text into smaller parts with optional overlap."""
-    if not text:
-        return []
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size - overlap)]
+# Function to split text into chunks
+def split_text(text):
+    """Splits text into manageable chunks."""
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    return splitter.split_text(text)
 
-def text_to_vectors(chunks, model_name="sentence-transformers/all-MiniLM-L6-v2"):
-    """Converts the text chunks into embeddings using HuggingFace SentenceTransformer."""
-    if not chunks:
-        return [], None
+# Function to create vector store
+def create_vector_store(chunks):
+    """Converts text chunks into embeddings and stores them in FAISS."""
+    logging.info("Generating embeddings and storing them in FAISS...")
+    embeddings = OpenAIEmbeddings()
+    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
+    return vector_store
 
-    logging.info("Generating embeddings for text chunks...")
-    model = SentenceTransformer(model_name)
-    vectors = model.encode(chunks, convert_to_numpy=True)
-    return vectors, model
+# Function to query the stored knowledge base
+def query_knowledge_base(vector_store, query):
+    """Retrieves relevant text chunks and generates a response using OpenAI."""
+    retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+    docs = retriever.get_relevant_documents(query)
 
-def store_vectors(vectors):
-    """Stores the vectors in FAISS index."""
-    if len(vectors) == 0:
-        return None
-
-    logging.info("Storing vectors in FAISS index...")
-    dimension = vectors.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(vectors)
-    return index
-
-def retrieve_answer(index, query, chunks, model):
-    """Retrieves the most relevant chunk using FAISS and queries Claude API."""
-    query_vector = model.encode([query], convert_to_numpy=True)
-    distances, indices = index.search(query_vector, 1)  # Get top-1 match
-    
-    if len(indices) == 0 or indices[0][0] == -1:
-        logging.error("No relevant match found in FAISS index.")
+    if not docs:
+        logging.warning("No relevant information found.")
         return "No relevant match found."
 
-    best_match = chunks[indices[0][0]]
+    context = "\n".join([doc.page_content for doc in docs])
+    logging.info(f"Retrieved context: {context[:200]}...")
 
-    logging.info(f"Best matching chunk: {best_match[:200]}...")
+    # Generate response using OpenAI GPT-4
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.5)
+    response = llm.invoke(f"Based on the following information, answer concisely:\n{context}\n\nQuestion: {query}")
+    
+    return response.content
 
-    api_key = os.getenv("CLAUDE_API_KEY")
-    if not api_key:
-        raise ValueError("CLAUDE_API_KEY environment variable is not set")
-
-    claude = ClaudeAPI(api_key)
-    response = claude.query(best_match + "\n" + query)
-    return response
-
+# Main function
 def main():
-    """Main function to run the script."""
-    try:
-        setup_logging()
-        setup_environment()
-        
-        url = input("Enter the website URL to scrape: ")
-        scraped_text = scrape_website(url)
-        
-        if not scraped_text:
-            logging.error("Failed to retrieve the website content.")
-            return
+    """Main function to run the pipeline."""
+    url = input("Enter the website URL to scrape: ")
+    scraped_text = scrape_website(url)
 
-        logging.info(f"Full text size: {len(scraped_text)} characters")
+    if not scraped_text:
+        logging.error("Failed to retrieve the website content.")
+        return
 
-        chunks = chunk_text(scraped_text)
-        logging.info(f"Number of chunks created: {len(chunks)}")
-        
-        vectors, model = text_to_vectors(chunks)
-        logging.info(f"Number of vectors created: {len(vectors)}")
-        
-        vector_store = store_vectors(vectors)
-        if not vector_store:
-            logging.error("Failed to create vector store.")
-            return
-            
-        while True:
-            query = input("\nEnter your query (or 'quit' to exit): ")
-            if query.lower() == 'quit':
-                break
-                
-            response = retrieve_answer(vector_store, query, chunks, model)
-            
-            print("\nResponse:")
-            print(response)
+    chunks = split_text(scraped_text)
+    logging.info(f"Number of chunks created: {len(chunks)}")
 
-    except EnvironmentError as e:
-        print(f"Environment Error: {str(e)}")
-    except Exception as e:
-        logging.error(f"An error occurred: {str(e)}")
+    vector_store = create_vector_store(chunks)
 
+    while True:
+        query = input("\nEnter your query (or 'quit' to exit): ")
+        if query.lower() == "quit":
+            break
+
+        response = query_knowledge_base(vector_store, query)
+        print("\nResponse:")
+        print(response)
+
+# Run script
 if __name__ == "__main__":
     main()

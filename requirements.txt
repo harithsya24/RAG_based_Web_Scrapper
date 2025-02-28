@@ -1,14 +1,28 @@
+# Core dependencies
 python-dotenv
 requests
 beautifulsoup4
+validators
+
+# LangChain & OpenAI
+langchain-core
+langchain-openai
+openai
 langchain-community
 langchain-text-splitters
-langchain-chroma
-langchain-ollama
-openai
-langchain_openai
+
+# Vector Stores & Embeddings
 faiss-cpu
+langchain-chroma
+langchain-huggingface
 sentence_transformers
-langchain_huggingface
-validators
-langchain_core
+
+# Optional Enhancements
+tqdm
+aiohttp
+numpy
+pandas
+torch
+transformers
+chromadb
+duckduckgo-search
