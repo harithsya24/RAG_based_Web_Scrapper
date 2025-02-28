@@ -11,13 +11,11 @@ from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 
 
-# Load environment variables
 load_dotenv()
 
-# Setup logging
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Function to scrape website content
 def scrape_website(url):
     """Scrapes textual content from a given website."""
     if not validators.url(url):
@@ -45,13 +43,11 @@ def scrape_website(url):
         logging.error(f"Request error while scraping: {e}")
         return None
 
-# Function to split text into chunks
 def split_text(text):
     """Splits text into manageable chunks."""
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     return splitter.split_text(text)
 
-# Function to create vector store
 def create_vector_store(chunks):
     """Converts text chunks into embeddings and stores them in FAISS."""
     logging.info("Generating embeddings and storing them in FAISS...")
@@ -59,7 +55,6 @@ def create_vector_store(chunks):
     vector_store = FAISS.from_texts(chunks, embedding=embeddings)
     return vector_store
 
-# Function to query the stored knowledge base
 def query_knowledge_base(vector_store, query):
     """Retrieves relevant text chunks and generates a response using OpenAI."""
     retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 3})
@@ -72,13 +67,11 @@ def query_knowledge_base(vector_store, query):
     context = "\n".join([doc.page_content for doc in docs])
     logging.info(f"Retrieved context: {context[:200]}...")
 
-    # Generate response using OpenAI GPT-4
     llm = ChatOpenAI(model="gpt-4o", temperature=0.5)
     response = llm.invoke(f"Based on the following information, answer concisely:\n{context}\n\nQuestion: {query}")
     
     return response.content
 
-# Main function
 def main():
     """Main function to run the pipeline."""
     url = input("Enter the website URL to scrape: ")
@@ -102,6 +95,5 @@ def main():
         print("\nResponse:")
         print(response)
 
-# Run script
 if __name__ == "__main__":
     main()

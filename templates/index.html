@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG-based Web Scraper</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1 class="my-4">RAG-based Web Scraper</h1>
+
+        <form id="scrapeForm">
+            <div class="form-group">
+                <label for="url">Website URL</label>
+                <input type="text" class="form-control" id="url" placeholder="Enter website URL" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Scrape Website</button>
+        </form>
+
+        <div id="scrapeMessage" class="mt-3"></div>
+
+        <hr>
+
+        <h3>Ask a Question</h3>
+        <form id="queryForm">
+            <div class="form-group">
+                <label for="query">Your Query</label>
+                <input type="text" class="form-control" id="query" placeholder="Enter your query" required>
+            </div>
+            <button type="submit" class="btn btn-success">Submit Query</button>
+        </form>
+
+        <div id="queryResponse" class="mt-3"></div>
+    </div>
+
+    <script>
+        $(document).ready(function () {
+            $('#scrapeForm').on('submit', function (e) {
+                e.preventDefault();
+                let url = $('#url').val();
+                
+                $.post('/scrape', { url: url }, function (response) {
+                    $('#scrapeMessage').html('<div class="alert alert-success">' + response.message + '</div>');
+                }).fail(function (xhr, status, error) {
+                    $('#scrapeMessage').html('<div class="alert alert-danger">' + xhr.responseJSON.error + '</div>');
+                });
+            });
+
+            $('#queryForm').on('submit', function (e) {
+                e.preventDefault();
+                let query = $('#query').val();
+
+                $.post('/query', { query: query }, function (response) {
+                    $('#queryResponse').html('<h4>Response:</h4><p>' + response.response + '</p>');
+                }).fail(function (xhr, status, error) {
+                    $('#queryResponse').html('<div class="alert alert-danger">' + xhr.responseJSON.error + '</div>');
+                });
+            });
+        });
+    </script>
+</body>
+</html>

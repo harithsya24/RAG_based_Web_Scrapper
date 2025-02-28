@@ -26,3 +26,6 @@ torch
 transformers
 chromadb
 duckduckgo-search
+
+#Frontend
+flask
